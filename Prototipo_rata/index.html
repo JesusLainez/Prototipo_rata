@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Prototipo Rata: Duelo Tira y Afloja</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none; /* Bloquea el scroll táctil para mejor control en móviles */
+        }
+
+        body {
+            background-color: #030805;
+            color: #2bfb5e;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 5px;
+            overflow: hidden;
+        }
+
+        .arcade-frame {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            border: 2px solid #2bfb5e;
+            border-radius: 10px;
+            padding: 8px;
+            background: #010a03;
+            box-shadow: 0 0 20px rgba(43, 251, 94, 0.2), inset 0 0 15px rgba(0, 0, 0, 0.9);
+            width: 100%;
+            max-width: 800px;
+        }
+
+        /* Efecto de pantalla CRT / Scanlines */
+        .arcade-frame::before {
+            content: " ";
+            display: block;
+            position: absolute;
+            top: 0; left: 0; bottom: 0; right: 0;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.3) 50%);
+            background-size: 100% 4px;
+            z-index: 10;
+            pointer-events: none;
+            opacity: 0.5;
+            border-radius: 8px;
+        }
+
+        .game-title {
+            font-size: clamp(14px, 3vw, 18px);
+            font-weight: bold;
+            letter-spacing: 2px;
+            text-align: center;
+            margin-bottom: 4px;
+            text-shadow: 0 0 8px #2bfb5e;
+            color: #2bfb5e;
+            z-index: 11;
+        }
+
+        #game-board {
+            white-space: pre;
+            /* Escalado dinámico basado en la solicitud para que entren 45 filas perfectas */
+            font-size: min(1.6vw, 1.6vh);
+            line-height: 1;
+            letter-spacing: 0;
+            background-color: #000401;
+            padding: 4px;
+            border: 1px solid rgba(43, 251, 94, 0.4);
+            border-radius: 4px;
+            box-shadow: inset 0 0 15px rgba(0, 0, 0, 0.95);
+            color: #2bfb5e;
+            text-shadow: 0 0 3px rgba(43, 251, 94, 0.6);
+            z-index: 11;
+        }
+
+        #ui-panel {
+            width: 100%;
+            margin-top: 6px;
+            font-size: clamp(10px, 2.5vw, 14px);
+            line-height: 1.3;
+            z-index: 11;
+        }
+
+        .ui-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2px;
+        }
+
+        .tug-war-container {
+            margin-top: 4px;
+            text-align: center;
+            font-weight: bold;
+        }
+
+        .green-zone { color: #2bfb5e; text-shadow: 0 0 5px #2bfb5e; }
+        .red-zone { color: #ff3366; text-shadow: 0 0 5px #ff3366; }
+        
+        .locked-on {
+            color: #ffff55;
+            font-weight: bold;
+            text-shadow: 0 0 8px #ffff55;
+            animation: pulse 0.4s infinite alternate;
+        }
+
+        @keyframes pulse {
+            from { opacity: 0.5; }
+            to { opacity: 1.0; }
+        }
+
+        .instructions {
+            margin-top: 5px;
+            font-size: 11px;
+            color: #1c9239;
+            text-align: center;
+            z-index: 11;
+            padding: 0 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="arcade-frame">
+        <div class="game-title">RATA vs GATO: DUELO</div>
+        <div id="game-board"></div>
+        <div id="ui-panel"></div>
+    </div>
+    <div class="instructions">
+        HITBOX AJUSTADO: El daño solo afecta al centro del cuerpo. ¡Los bigotes son intangibles!<br>
+        Mueve para esquivar y alinéate para el auto-disparo.
+    </div>
+
+<script>
+    // Configuración de la Arena Masiva
+    const COLS = 55;
+    const ROWS = 45;
+    const FPS = 25;
+
+    // Estado del Dominio (Tira y Afloja)
+    let tugOfWar = 50.0;
+    let phase = 2; // Inicia dinámicamente según el Dominio
+    
+    // Estado de la Rata
+    let ratCol = Math.floor(COLS / 2);
+    let charge = 0;
+    let invulnTimer = 0;
+
+    // Estado del Gato (Boss)
+    let catCol = Math.floor(COLS / 2);
+    let catDir = 1;
+    let catHitFlash = 0;
+
+    // Arrays de entidades
+    let bullets = [];
+    let laserTimer = 0;
+    let floatingTexts = [];
+    
+    let state = 'PLAY'; // PLAY, WIN, LOSE
+    let frameCount = 0;
+    let statusText = "¡BATALLA INICIADA!";
+
+    // Arte del Jefe Gato de 3x9
+    const CAT_ART = [
+        "  /\\_/\\  ",
+        " ( o.o ) ",
+        "  > ^ <  "
+    ];
+    const CAT_OFFSET = 4; // Radio visual para un ancho de 9 (centro es índice 4)
+
+    // Arte del Jugador Ratón de 3x7
+    const RAT_ART = [
+        " ()_() ",
+        "~(. .)~", 
+        " (\")(\") " 
+    ];
+    const RAT_OFFSET = 3; // Radio visual para un ancho de 7 (centro es índice 3)
+    // NOTA HITBOX: Aunque el arte va de -3 a +3, el daño será de -2 a +2.
+
+    function updatePlayerPos(clientX) {
+        if (state !== 'PLAY') return;
+        const rect = document.getElementById('game-board').getBoundingClientRect();
+        
+        let relativeX = clientX - rect.left;
+        let percent = relativeX / rect.width;
+        percent = Math.max(0, Math.min(1, percent));
+        
+        ratCol = Math.floor(percent * COLS);
+        
+        // Evitar que el arte salga de la pantalla
+        if (ratCol < RAT_OFFSET) ratCol = RAT_OFFSET;
+        if (ratCol >= COLS - RAT_OFFSET) ratCol = COLS - RAT_OFFSET - 1;
+    }
+
+    // Escuchadores de eventos para escritorio y móvil
+    window.addEventListener('mousemove', (e) => updatePlayerPos(e.clientX));
+    
+    window.addEventListener('touchmove', (e) => {
+        if (e.touches.length > 0) updatePlayerPos(e.touches[0].clientX);
+    }, { passive: true });
+
+    window.addEventListener('touchstart', (e) => {
+        if (state !== 'PLAY') resetGame();
+        else if (e.touches.length > 0) updatePlayerPos(e.touches[0].clientX);
+    }, { passive: true });
+
+    window.addEventListener('click', () => {
+        if (state !== 'PLAY') resetGame();
+    });
+
+    function resetGame() {
+        tugOfWar = 50.0;
+        charge = 0;
+        bullets = [];
+        floatingTexts = [];
+        ratCol = Math.floor(COLS / 2);
+        catCol = Math.floor(COLS / 2);
+        state = 'PLAY';
+        frameCount = 0;
+        invulnTimer = 0;
+        statusText = "¡DUELO REINICIADO!";
+    }
+
+    // Bucle principal a velocidad FPS
+    function gameLoop() {
+        if (state === 'PLAY') update();
+        render();
+    }
+
+    function update() {
+        frameCount++;
+
+        // 1. Dinámica de Fases basada en Dominio
+        if (tugOfWar <= 40) phase = 1;
+        else if (tugOfWar <= 75) phase = 2;
+        else phase = 3;
+
+        // 2. IA del Jefe (Movimiento)
+        let speedDivider = phase === 1 ? 4 : (phase === 2 ? 3 : 2);
+        if (frameCount % speedDivider === 0) {
+            catCol += catDir;
+            if (catCol <= CAT_OFFSET + 1 || catCol >= COLS - CAT_OFFSET - 2) {
+                catDir *= -1;
+            }
+            if (phase === 3 && Math.random() < 0.05) {
+                catDir *= -1; // Comportamiento errático
+            }
+        }
+
+        // 3. Spawneado de Balas
+        let attackRate = phase === 1 ? 25 : (phase === 2 ? 18 : 10);
+        if (frameCount % attackRate === 0) spawnCatAttacks();
+
+        // 4. Física de balas y sistema crítico de Hitbox
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            let b = bullets[i];
+            b.r += b.speedR;
+            b.c += b.speedC;
+
+            let br = Math.floor(b.r);
+            let bc = Math.floor(b.c);
+
+            // DEFINICIÓN DE COLISIÓN (HITBOX AJUSTADO)
+            // El arte del ratón abarca 3 filas (ROWS-4, ROWS-3, ROWS-2)
+            if (br >= ROWS - 4 && br <= ROWS - 2) {
+                // EXCLUYE BIGOTES: El hitox real de daño va de ratCol-2 a ratCol+2
+                // Si el proyectil está en ratCol-3 o ratCol+3, es zona de bigote = sin daño.
+                if (bc >= ratCol - 2 && bc <= ratCol + 2) {
+                    if (invulnTimer === 0) {
+                        tugOfWar = Math.max(0, tugOfWar - 8.0); // Daño -8%
+                        invulnTimer = 25; // Invulnerabilidad
+                        bullets.splice(i, 1);
+                        
+                        addFloatingText(ROWS - 5, ratCol - 3, "!GOLPE -8%!");
+                        statusText = "¡EL GATO TE EMPUJA!";
+
+                        if (tugOfWar <= 0) {
+                            state = 'LOSE';
+                            statusText = "¡EL GATO DOMINÓ EL DUELO!";
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            // Limpieza de balas fuera de arena
+            if (br >= ROWS || bc < 0 || bc >= COLS || br < 0) {
+                bullets.splice(i, 1);
+            }
+        }
+
+        // Carga y Disparo Automático
+        charge += 1.5;
+        if (charge >= 100) {
+            charge = 0;
+            laserTimer = 6;
+
+            // Alineación para golpear (CatHitbox de +- CAT_OFFSET)
+            let isAligned = Math.abs(ratCol - catCol) <= (CAT_OFFSET);
+
+            if (isAligned) {
+                tugOfWar = Math.min(100, tugOfWar + 12.0); // Éxito +12%
+                catHitFlash = 10;
+                addFloatingText(5, catCol - 4, "!EMPUJE +12%!");
+                statusText = "¡IMPACTO CERTERO!";
+
+                if (tugOfWar >= 100) {
+                    state = 'WIN';
+                    statusText = "¡DOMINIO TOTAL! ¡VICTORIA!";
+                }
+            } else {
+                addFloatingText(ROWS - 6, ratCol - 3, "!FALLO!");
+                statusText = "¡ATAQUE FALLIDO!";
+            }
+        }
+
+        // Reducir temporizadores
+        if (invulnTimer > 0) invulnTimer--;
+        if (laserTimer > 0) laserTimer--;
+        if (catHitFlash > 0) catHitFlash--;
+
+        // Animar textos flotantes
+        for (let i = floatingTexts.length - 1; i >= 0; i--) {
+            floatingTexts[i].life--;
+            if (floatingTexts[i].life % 2 === 0) floatingTexts[i].r--;
+            if (floatingTexts[i].life <= 0) floatingTexts.splice(i, 1);
+        }
+    }
+
+    function spawnCatAttacks() {
+        const startR = 4;
+        let speedMult = 1.3; // Ajuste para arena de 45 filas
+
+        if (phase === 1) {
+            bullets.push({ r: startR, c: catCol, speedR: 0.75 * speedMult, speedC: 0, char: 'v' });
+        } else if (phase === 2) {
+            bullets.push({ r: startR, c: catCol, speedR: 0.8 * speedMult, speedC: 0, char: '|' });
+            bullets.push({ r: startR, c: catCol - 2, speedR: 0.7 * speedMult, speedC: -0.2, char: '/' });
+            bullets.push({ r: startR, c: catCol + 2, speedR: 0.7 * speedMult, speedC: 0.2, char: '\\' });
+        } else if (phase === 3) {
+            let type = frameCount % 3;
+            if (type === 0) {
+                bullets.push({ r: startR, c: catCol - 3, speedR: 0.9 * speedMult, speedC: -0.3, char: 'v' });
+                bullets.push({ r: startR, c: catCol + 3, speedR: 0.9 * speedMult, speedC: 0.3, char: 'v' });
+            } else if (type === 1) {
+                // Ataque dirigido al jugador (Estrellas)
+                let targetDir = ratCol > catCol ? 0.4 : (ratCol < catCol ? -0.4 : 0);
+                bullets.push({ r: startR, c: catCol, speedR: 1.0 * speedMult, speedC: targetDir, char: '*' });
+            } else {
+                bullets.push({ r: startR, c: catCol - 5, speedR: 0.8 * speedMult, speedC: 0, char: 'v' });
+                bullets.push({ r: startR, c: catCol + 5, speedR: 0.8 * speedMult, speedC: 0, char: 'v' });
+            }
+        }
+    }
+
+    function addFloatingText(r, c, text) {
+        floatingTexts.push({
+            r: r,
+            c: Math.max(1, Math.min(COLS - text.length - 1, c)),
+            text: text,
+            life: 15
+        });
+    }
+
+    function render() {
+        let grid = Array.from({ length: ROWS }, () => Array(COLS).fill(' '));
+
+        // Dibujar Bordes Superior/Inferior
+        for (let c = 0; c < COLS; c++) {
+            grid[0][c] = '-';
+            grid[ROWS - 1][c] = '-';
+        }
+
+        // Rayo Láser del Jugador
+        if (laserTimer > 0) {
+            for (let r = 4; r < ROWS - 4; r++) {
+                grid[r][ratCol] = '║';
+            }
+        }
+
+        // Dibujar Boss Gato
+        if (catHitFlash % 4 < 2) { 
+            let catStartC = catCol - CAT_OFFSET;
+            for (let rIdx = 0; rIdx < CAT_ART.length; rIdx++) {
+                let line = CAT_ART[rIdx];
+                for (let cIdx = 0; cIdx < line.length; cIdx++) {
+                    let tc = catStartC + cIdx;
+                    if (tc >= 0 && tc < COLS) grid[1 + rIdx][tc] = line[cIdx];
+                }
+            }
+        }
+
+        // Dibujar Jugador Ratón (El arte ocupa 3 filas)
+        if (invulnTimer === 0 || Math.floor(frameCount / 2) % 2 === 0) {
+            let ratStartC = ratCol - RAT_OFFSET;
+            // Las 3 filas irán en ROWS-4, ROWS-3 y ROWS-2
+            let startRow = ROWS - 4; 
+            for (let rIdx = 0; rIdx < RAT_ART.length; rIdx++) {
+                let line = RAT_ART[rIdx];
+                for (let cIdx = 0; cIdx < line.length; cIdx++) {
+                    let tc = ratStartC + cIdx;
+                    if (tc >= 0 && tc < COLS) grid[startRow + rIdx][tc] = line[cIdx];
+                }
+            }
+        }
+
+        // Dibujar Balas Enemigas
+        for (let b of bullets) {
+            let br = Math.floor(b.r);
+            let bc = Math.floor(b.c);
+            if (br >= 1 && br < ROWS - 1 && bc >= 0 && bc < COLS) {
+                // Si la bala pasa sobre la posición del bigote, dibujarla de todos modos (efecto visual de ser atravesado)
+                grid[br][bc] = b.char;
+            }
+        }
+
+        // Renderizar Textos Flotantes
+        for (let ft of floatingTexts) {
+            let fr = Math.floor(ft.r);
+            if (fr >= 1 && fr < ROWS - 1) {
+                for (let i = 0; i < ft.text.length; i++) {
+                    let fc = ft.c + i;
+                    if (fc >= 0 && fc < COLS) grid[fr][fc] = ft.text[i];
+                }
+            }
+        }
+
+        document.getElementById('game-board').innerText = grid.map(row => row.join('')).join('\n');
+        renderUI();
+    }
+
+    function renderUI() {
+        let isAligned = Math.abs(ratCol - catCol) <= (CAT_OFFSET);
+        let alignStatus = isAligned ? `<span class="locked-on">🎯 FIJADO</span>` : `<span>BUSCANDO...</span>`;
+
+        // Barra de Tira y Afloja (Dominio)
+        let barLength = 24; 
+        let greenBlocks = Math.round((tugOfWar / 100) * barLength);
+        let redBlocks = barLength - greenBlocks;
+
+        let greenBar = "█".repeat(greenBlocks);
+        let redBar = "░".repeat(redBlocks);
+
+        // Barra de Carga
+        let chargeLength = 10;
+        let filledCharge = Math.floor((charge / 100) * chargeLength);
+        let chargeBarStr = "█".repeat(filledCharge) + "░".repeat(chargeLength - filledCharge);
+
+        let html = `
+            <div class="ui-row">
+                <span>ESTADO: ${alignStatus}</span>
+                <span>FASE: <b class="${phase===3 ? 'red-zone' : 'green-zone'}">${phase}/3</b></span>
+            </div>
+            
+            <div class="tug-war-container">
+                <div>DOMINIO EN ARENA: ${Math.floor(tugOfWar)}%</div>
+                [<span class="green-zone">${greenBar}</span><span class="red-zone">${redBar}</span>]
+            </div>
+
+            <div class="ui-row" style="margin-top: 6px;">
+                <span>CARGA: [${chargeBarStr}] ${Math.floor(charge)}%</span>
+                <span style="font-weight:bold">${statusText}</span>
+            </div>
+        `;
+
+        // Mensaje de fin de juego
+        if (state !== 'PLAY') {
+            let endColor = state === 'WIN' ? 'green-zone' : 'red-zone';
+            html += `
+                <div style="text-align:center; margin-top:8px; font-weight:bold;" class="${endColor}">
+                    === ${state === 'WIN' ? '¡VICTORIA ROEDORA!' : '¡EL GATO HA GANADO!'} ===<br>
+                    <span style="font-size:10px; color:#2bfb5e;">[ Toca la pantalla para reiniciar ]</span>
+                </div>
+            `;
+        }
+
+        document.getElementById('ui-panel').innerHTML = html;
+    }
+
+    // Arrancar el bucle
+    setInterval(gameLoop, 1000 / FPS);
+
+</script>
+</body>
+</html>
